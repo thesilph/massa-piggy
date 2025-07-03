@@ -9,7 +9,14 @@ const REQUIRED_CHECKINS: u64 = 100; // 100 days (or 100 check-ins)
 
 // REPLACE WITH A REAL TESTNET CHARITY ADDRESS or a test address you control
 const DONATION_ADDRESS: Address = new Address("AS12...");
-const FEE_PER_CHECKIN: u64 = 100000; // Example fee in smallest units (1 MAS = 1,000,000,000 smallest units)
+const MIN_DEPOSIT_AMOUNT: u64 = 5_000_000_000; // 5 MAS (5 * 10^9 smallest units)
+                                             // Make sure this is sufficient to cover ASC_FEE and contribute to contract balance.
+              
+
+const PROTOCOL_PROFIT_ADDRESS: Address = new Address("AS12_YOUR_PROFIT_ADDRESS_HERE"); // !!! REPLACE WITH YOUR ADDRESS !!!
+const PROTOCOL_FEE_PER_DEPOSIT: u64 = 100_000_000; // Example: 0.1 MAS (100 million smallest units)
+                                                // This is deducted from the MIN_DEPOSIT_AMOUNT
+
 
 // Define Massa's slot duration (0.5 seconds per slot)
 const MASSA_SLOT_DURATION_SECONDS: u64 = 1; // It's 0.5s for thread, but Context.blockTimestamp() advances by ~1s for each block, so using 1 for easier calculation with seconds.
@@ -86,45 +93,57 @@ function setUserDeposit(userAddress: Address, data: UserDeposit): void {
 
 
 export function deposit(): void {
-  const caller = Context.caller();
-  const amount = Context.transferredCoins();
+    const caller = Context.caller();
+    const amount = Context.transferredCoins(); // Total MAS sent for deposit
 
-  // Ensure a positive amount is sent
-  assert(amount > 0, "Deposit amount must be greater than 0.");
+    // Assert that the minimum deposit amount is met for any interaction
+    assert(amount >= MIN_DEPOSIT_AMOUNT, `Deposit amount must be at least ${MIN_DEPOSIT_AMOUNT} MAS units to act as a check-in.`);
 
-  let userData = getUserDeposit(caller);
+    let userData = getUserDeposit(caller);
+    let netDepositAmount = amount; // The entire amount sent by the user adds to their balance
 
-  // If this is a new deposit, initialize
-  if (userData.amount == 0 && userData.is_active) {
-    // First deposit: Set initial timestamp and schedule the first ASC
-    userData.last_checkin_timestamp = Context.timestamp();
-    userData.is_active = true;
-    userData.checkin_count = 0; // Reset for new commitment
-  } else {
-    // Re-deposit: only if active
-    assert(userData.is_active, "Cannot deposit to a perished account.");
-    // Update timestamp for any deposit, counting as a "check-in"
-    userData.last_checkin_timestamp = Context.timestamp();
-  }
+    // Transfer the protocol fee FIRST
+    transferCoins(PROTOCOL_PROFIT_ADDRESS, PROTOCOL_FEE_PER_DEPOSIT);
+    netDepositAmount -= PROTOCOL_FEE_PER_DEPOSIT; // Deduct the profit fee from the amount that goes to the user's balance
+    generateEvent(`Protocol Fee Collected: ${PROTOCOL_FEE_PER_DEPOSIT} MAS sent to ${PROTOCOL_PROFIT_ADDRESS.toString()}`);
 
-  userData.amount += amount; // Add to existing balance
-  setUserDeposit(caller, userData);
 
-  // Schedule/Reschedule the check-in ASC
-  scheduleCheckinASC(caller, userData);
+    // Check if this is the very first deposit for this user's commitment
+    if (userData.amount == 0 && !userData.is_active) { // !is_active for newly initialized UserDeposit means it's new/empty
+                                                      // Or if you explicitly set is_active=false on cleanup.
+                                                      // Better check: if Storage.has(key)
+        // This means it's a completely new commitment. Initialize state.
+        userData.checkin_count = 0; // Start commitment count from zero
+        userData.is_active = true; // Ensure active
+        // No separate initial fee to subtract, the MIN_DEPOSIT_AMOUNT is added to their balance.
+    } else {
+        assert(userData.is_active, "Cannot deposit to a perished account.");
+        // For existing active commitments, the full deposit amount just adds to their balance.
+        // The check-in fee is implicitly covered by the contract's balance from all deposits.
+    }
 
-  generateEvent(`Deposit: ${caller.toString()} deposited ${amount} MAS. Total: ${userData.amount}`);
+    userData.amount += netDepositAmount; // Add the *entire* net deposit to the user's balance
+    userData.last_checkin_timestamp = Context.timestamp(); // This is the "check-in" action!
+    userData.checkin_count += 1; // Increment check-in count with every deposit
+
+    setUserDeposit(caller, userData);
+
+    // Always reschedule the ASC after a deposit
+    scheduleCheckinASC(caller, userData);
+
+    generateEvent(`Deposit/CheckIn: ${caller.toString()} deposited ${netDepositAmount} MAS. Total: ${userData.amount}. Check-ins: ${userData.checkin_count}.`);
 }
+
 // Helper function to schedule/reschedule the ASC
 function scheduleCheckinASC(userAddress: Address, userData: UserDeposit): void {
     // If an ASC was previously scheduled, try to cancel it to avoid duplicates
     // This makes the system more robust and avoids unnecessary fee burns if an old ASC fires.
-    if (userData.asc_id != 0) {
-        // Attempt to cancel the previous ASC. If it already executed or doesn't exist, this might silently fail or throw.
-        // It's generally safe to try to cancel an already executed ASC.
-        deferredCallCancel(userData.asc_id.toString());
-        generateEvent(`Cancelled old ASC ${userData.asc_id} for ${userAddress.toString()}`);
-    }
+    // if (userData.asc_id != 0) {
+    //     // Attempt to cancel the previous ASC. If it already executed or doesn't exist, this might silently fail or throw.
+    //     // It's generally safe to try to cancel an already executed ASC.
+    //     deferredCallCancel(userData.asc_id.toString());
+    //     generateEvent(`Cancelled old ASC ${userData.asc_id} for ${userAddress.toString()}`);
+    // }
 
     // Calculate target slot for execution
     const currentSlot = Context.currentPeriod();
@@ -138,7 +157,7 @@ function scheduleCheckinASC(userAddress: Address, userData: UserDeposit): void {
     // For simplicity, let's calculate based on current slot for relative timing.
     // The `validityStartSlot` is the earliest slot it can be executed.
     // The `validityEndSlot` defines the window. A window of 200 slots (100 seconds) is often reasonable.
-    const startPeriod = currentSlot + (GRACE_PERIOD_SECONDS / MASSA_SLOT_DURATION_SECONDS); // Calculate slots from seconds
+    const startPeriod = currentSlot + targetSlotTimestamp + (GRACE_PERIOD_SECONDS / MASSA_SLOT_DURATION_SECONDS); // Calculate slots from seconds
     const endPeriod = startPeriod + 200; // Example: 100-second execution window
 
     const validityStartSlot = new Slot(startPeriod, currentThread);
@@ -234,30 +253,39 @@ export function withdraw(amount: u64): void {
     assert(userData.amount >= amount, "Insufficient funds to withdraw.");
     assert(amount > 0, "Withdrawal amount must be greater than 0.");
 
-    // Check for 100-day completion or if user wants to withdraw partial funds
     if (userData.checkin_count >= REQUIRED_CHECKINS) {
-        // User completed 100 days, can withdraw full amount
+        // User completed commitment, withdraw full amount
         transferCoins(caller, userData.amount);
-        generateEvent(`Withdraw: ${caller.toString()} withdrew full amount (${userData.amount} MAS) after 100 days!`);
-        // Reset user's record after full withdrawal
-        userData = new UserDeposit(); // Reset all to default (inactive, no funds)
-        // TODO: Also cancel the ASC for this user if it exists and hasn't been cancelled by 100 days.
+        generateEvent(`Withdraw: ${caller.toString()} withdrew full amount (${userData.amount} MAS) after ${userData.checkin_count} days!`);
+        // Clear user's record completely
+        userData = new UserDeposit(); // Reset all to default
+
+        Storage.del(USER_DEPOSITS_KEY_PREFIX + caller.toString()); // Clean up storage
     } else {
-        // Partial withdrawal before 100 days
+        // Partial withdrawal before completion
         transferCoins(caller, amount);
         userData.amount -= amount;
         generateEvent(`Withdraw: ${caller.toString()} withdrew ${amount} MAS. Remaining: ${userData.amount}`);
-    }
 
-    // If all funds are withdrawn or perished, cancel ASC and clear storage for user
-    if (userData.amount == 0 || !userData.is_active) {
-         // For robustness, ensure ASC is explicitly cancelled
-         // This is tricky if you have multiple ASCs scheduled without good ID management.
-         // If you only schedule ONE ASC per user, storing `asc_id` helps cancel it.
-         // For a simpler MVP, you might rely on the `is_active` check within the ASC.
-         Storage.del(USER_DEPOSITS_KEY_PREFIX + caller.toString()); // Clean up storage
-         generateEvent(`Account deleted for ${caller.toString()}.`);
-    } else {
-        setUserDeposit(caller, userData);
+        // If amount becomes zero, consider it an "end" of commitment and clean up
+        if (userData.amount == 0) {
+            userData = new UserDeposit();
+            Storage.del(USER_DEPOSITS_KEY_PREFIX + caller.toString()); // Clean up storage
+            generateEvent(`Account cleared for ${caller.toString()} after full withdrawal.`);
+        } else {
+            setUserDeposit(caller, userData);
+        }
     }
+}
+
+// You might also want a `view` function for users to check their current status:
+export function getMyStatus(userAddress: Address): StaticArray<u8> {
+    let userData = getUserDeposit(userAddress);
+    return new Args()
+        .add(userData.amount)
+        .add(userData.last_checkin_timestamp)
+        .add(userData.checkin_count)
+        .add(userData.is_active)
+        .add(userData.asc_id)
+        .serialize();
 }
