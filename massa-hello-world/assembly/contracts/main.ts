@@ -32,20 +32,17 @@ class UserDeposit {
   last_checkin_timestamp: u64;
   checkin_count: u64;
   is_active: bool; // True if not perished
-  asc_id: u64; // To store the ID of the scheduled ASC for this user
 
   constructor(
     amount: u64 = 0,
     last_checkin_timestamp: u64 = 0,
     checkin_count: u64 = 0,
-    is_active: bool = true,
-    asc_id: u64 = 0
+    is_active: bool = true
   ) {
     this.amount = amount;
     this.last_checkin_timestamp = last_checkin_timestamp;
     this.checkin_count = checkin_count;
     this.is_active = is_active;
-    this.asc_id = asc_id;
   }
 
   // Serialization/Deserialization for storage (Massa AS-SDK provides helpers for Args)
@@ -56,7 +53,6 @@ class UserDeposit {
       .add(this.last_checkin_timestamp)
       .add(this.checkin_count)
       .add(this.is_active)
-      .add(this.asc_id)
       .serialize();
   }
 
@@ -66,8 +62,7 @@ class UserDeposit {
       args.nextU64().unwrap(),
       args.nextU64().unwrap(),
       args.nextU64().unwrap(),
-      args.nextBool().unwrap(),
-      args.nextU64().unwrap()
+      args.nextBool().unwrap()
     );
   }
 }
@@ -104,18 +99,12 @@ export function deposit(): void {
     generateEvent(`Protocol Fee Collected: ${PROTOCOL_FEE_PER_DEPOSIT} MAS sent to ${PROTOCOL_PROFIT_ADDRESS.toString()}`);
 
 
-    // Check if this is the very first deposit for this user's commitment
-    if (userData.amount == 0 && !userData.is_active) { // !is_active for newly initialized UserDeposit means it's new/empty
-                                                      // Or if you explicitly set is_active=false on cleanup.
-                                                      // Better check: if Storage.has(key)
+    if (userData.amount == 0 && !userData.is_active) {
         // This means it's a completely new commitment. Initialize state.
-        userData.checkin_count = 0; // Start commitment count from zero
-        userData.is_active = true; // Ensure active
-        // No separate initial fee to subtract, the MIN_DEPOSIT_AMOUNT is added to their balance.
+        userData.checkin_count = 0;
+        userData.is_active = true;
     } else {
         assert(userData.is_active, "Cannot deposit to a perished account.");
-        // For existing active commitments, the full deposit amount just adds to their balance.
-        // The check-in fee is implicitly covered by the contract's balance from all deposits.
     }
 
     userData.amount += netDepositAmount; // Add the *entire* net deposit to the user's balance
@@ -132,27 +121,13 @@ export function deposit(): void {
 
 // Helper function to schedule/reschedule the ASC
 function scheduleCheckinASC(userAddress: Address, userData: UserDeposit): void {
-    // If an ASC was previously scheduled, try to cancel it to avoid duplicates
-    // This makes the system more robust and avoids unnecessary fee burns if an old ASC fires.
-    // if (userData.asc_id != 0) {
-    //     // Attempt to cancel the previous ASC. If it already executed or doesn't exist, this might silently fail or throw.
-    //     // It's generally safe to try to cancel an already executed ASC.
-    //     deferredCallCancel(userData.asc_id.toString());
-    //     generateEvent(`Cancelled old ASC ${userData.asc_id} for ${userAddress.toString()}`);
-    // }
 
     // Calculate target slot for execution
     const currentSlot = Context.currentPeriod();
     const currentThread = Context.currentThread();
     const targetSlotTimestamp = userData.last_checkin_timestamp + GRACE_PERIOD_SECONDS;
 
-    // Approximate the target slot from the timestamp.
-    // Massa's `Slot` type uses `period: u64` and `thread: u8`.
-    // You need to convert your target timestamp into a `Slot` object.
-    // Massa genesis timestamp is a fixed point.
-    // For simplicity, let's calculate based on current slot for relative timing.
-    // The `validityStartSlot` is the earliest slot it can be executed.
-    // The `validityEndSlot` defines the window. A window of 200 slots (100 seconds) is often reasonable.
+
     const startPeriod = currentSlot + targetSlotTimestamp + (GRACE_PERIOD_SECONDS / MASSA_SLOT_DURATION_SECONDS); // Calculate slots from seconds
     const endPeriod = startPeriod + 200; // Example: 100-second execution window
 
@@ -174,15 +149,12 @@ function scheduleCheckinASC(userAddress: Address, userData: UserDeposit): void {
         // filterAddress and filterKey are optional, not needed here
     );
 
-    // userData.asc_id = newAscId; // Store the ID for potential cancellation later
     setUserDeposit(userAddress, userData);
     generateEvent(`ASC Scheduled: ${userAddress.toString()} for slot ${startPeriod}. `);
 }
 
 export function checkAndPerish(userAddress: Address): void {
     // IMPORTANT: This function should only be callable by the scheduled ASC itself.
-    // In Massa, the `Context.caller()` of an ASC is the contract itself.
-    // So, ensure `Context.caller()` is `Context.callee()` for this specific use case.
     assert(Context.caller() == Context.callee(), "This function can only be called by a scheduled ASC from this contract.");
 
     let userData = getUserDeposit(userAddress);
@@ -206,13 +178,9 @@ export function checkAndPerish(userAddress: Address): void {
 
         // Reset balance in contract's internal record (coins were transferred)
         userData.amount = 0;
-        userData.asc_id = 0; // Clear ASC ID as it's no longer needed
         setUserDeposit(userAddress, userData);
 
         // TODO: If you stored the ASC ID, you might explicitly cancel it here,
-        // though once executed, it's typically "done". But if multiple ASCs were scheduled
-        // (e.g., if deposit called multiple times without explicit cancellation of previous ASCs),
-        // you'd need a more robust ASC ID management. For now, relying on `is_active` check.
 
     } else {
         // Pet is still active, just resubmit the check. This might happen if
@@ -282,6 +250,5 @@ export function getMyStatus(userAddress: Address): StaticArray<u8> {
         .add(userData.last_checkin_timestamp)
         .add(userData.checkin_count)
         .add(userData.is_active)
-        .add(userData.asc_id)
         .serialize();
 }
