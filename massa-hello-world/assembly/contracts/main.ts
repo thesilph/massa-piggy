@@ -20,8 +20,6 @@ const PROTOCOL_FEE_PER_DEPOSIT: u64 = 100_000_000; // Example: 0.1 MAS (100 mill
 
 // Define Massa's slot duration (0.5 seconds per slot)
 const MASSA_SLOT_DURATION_SECONDS: u64 = 1; // It's 0.5s for thread, but Context.blockTimestamp() advances by ~1s for each block, so using 1 for easier calculation with seconds.
-                                             // For more precision, consider Context.currentSlot().slot directly if your grace period is in slots.
-                                             // Let's assume GRACE_PERIOD_SECONDS is in seconds for now.
 const ASC_MAX_GAS: u64 = 5_000_000; // A reasonably generous max gas for the ASC execution. Adjust based on testing.
 const ASC_FEE: u64 = 500_000; // 0.0005 MAS, a reasonable fee to ensure execution priority for this critical ASC. Adjust based on testing.
 
