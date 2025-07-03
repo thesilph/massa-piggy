@@ -72,10 +72,6 @@ class UserDeposit {
   }
 }
 
-// Storage keys for user data
-// You'll map user addresses to their UserDeposit data
-const USER_DEPOSITS_KEY_PREFIX: string = "user_deposits_";
-
 // Helper to get user data from storage
 function getUserDeposit(userAddress: Address): UserDeposit {
   const key = userAddress.serialize();
@@ -260,7 +256,7 @@ export function withdraw(amount: u64): void {
         // Clear user's record completely
         userData = new UserDeposit(); // Reset all to default
 
-        Storage.del(USER_DEPOSITS_KEY_PREFIX + caller.toString()); // Clean up storage
+        Storage.del(caller.serialize()); // Clean up storage
     } else {
         // Partial withdrawal before completion
         transferCoins(caller, amount);
@@ -270,7 +266,7 @@ export function withdraw(amount: u64): void {
         // If amount becomes zero, consider it an "end" of commitment and clean up
         if (userData.amount == 0) {
             userData = new UserDeposit();
-            Storage.del(USER_DEPOSITS_KEY_PREFIX + caller.toString()); // Clean up storage
+            Storage.del(caller.serialize()); // Clean up storage
             generateEvent(`Account cleared for ${caller.toString()} after full withdrawal.`);
         } else {
             setUserDeposit(caller, userData);
