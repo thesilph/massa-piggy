@@ -147,7 +147,7 @@ function scheduleCheckinASC(userAddress: Address, userData: UserDeposit): void {
     const args = new Args().add(userAddress);
 
     // Schedule the ASC to call checkAndPerish function on THIS contract
-    const newAscId = asyncCall(
+    asyncCall(
         Context.callee(), // Target contract (this contract)
         "checkAndPerish", // Target function name
         validityStartSlot, // Earliest slot for execution
@@ -161,7 +161,7 @@ function scheduleCheckinASC(userAddress: Address, userData: UserDeposit): void {
 
     // userData.asc_id = newAscId; // Store the ID for potential cancellation later
     setUserDeposit(userAddress, userData);
-    generateEvent(`ASC Scheduled: ${userAddress.toString()} for slot ${startPeriod}. ID: ${newAscId}`);
+    generateEvent(`ASC Scheduled: ${userAddress.toString()} for slot ${startPeriod}. `);
 }
 
 export function checkAndPerish(userAddress: Address): void {
