@@ -14,4 +14,4 @@ Planned features:
 - Yield farming integration
 - Proxy contract to swap in and out functionality
 
-Built 
+Built with [AssemblyScript](https://www.assemblyscript.org/)
