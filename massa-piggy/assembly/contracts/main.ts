@@ -1,6 +1,6 @@
 /* eslint-disable */
 
-import { Storage, Context, generateEvent, Address, transferCoins, asyncCall, deferredCallCancel, Slot } from "@massalabs/massa-as-sdk";
+import { Storage, Context, generateEvent, Address, transferCoins, asyncCall, deferredCallCancel, Slot, KeyIncrementer } from "@massalabs/massa-as-sdk";
 import { Args } from "@massalabs/as-types"; // For serializing complex data
 import { DONATION_ADDRESS, PROTOCOL_PROFIT_ADDRESS } from "./config";
 
@@ -21,6 +21,7 @@ const MASSA_SLOT_DURATION_SECONDS: u64 = 1; // It's 0.5s for thread, but Context
 const ASC_MAX_GAS: u64 = 5_000_000; // A reasonably generous max gas for the ASC execution. Adjust based on testing.
 const ASC_FEE: u64 = 500_000; // 0.0005 MAS, a reasonable fee to ensure execution priority for this critical ASC. Adjust based on testing.
 
+let last_prune_timestamp = 0;
 
 // Data structure for each user's deposit
 class UserDeposit {
@@ -78,6 +79,12 @@ function setUserDeposit(userAddress: Address, data: UserDeposit): void {
   Storage.set(key, data.toByte());
 }
 
+// Helper to set user data to storage
+function setUserDepositKey(userKey: StaticArray<u8>, data: UserDeposit): void {
+  const key = userKey;
+  Storage.set(key, data.toByte());
+}
+
 
 export function deposit(): void {
     const caller = Context.caller();
@@ -109,19 +116,16 @@ export function deposit(): void {
 
     setUserDeposit(caller, userData);
 
-    // Always reschedule the ASC after a deposit
-    scheduleCheckinASC(caller, userData);
-
     generateEvent(`Deposit/CheckIn: ${caller.toString()} deposited ${netDepositAmount} MAS. Total: ${userData.amount}. Check-ins: ${userData.checkin_count}.`);
 }
 
 // Helper function to schedule/reschedule the ASC
-function scheduleCheckinASC(userAddress: Address, userData: UserDeposit): void {
+function scheduleCheckinASC(): void {
 
     // Calculate target slot for execution
     const currentSlot = Context.currentPeriod();
     const currentThread = Context.currentThread();
-    const targetSlotTimestamp = userData.last_checkin_timestamp + GRACE_PERIOD_SECONDS;
+    const targetSlotTimestamp = last_prune_timestamp + GRACE_PERIOD_SECONDS;
 
 
     const startPeriod = currentSlot + targetSlotTimestamp + (GRACE_PERIOD_SECONDS / MASSA_SLOT_DURATION_SECONDS); // Calculate slots from seconds
@@ -130,7 +134,6 @@ function scheduleCheckinASC(userAddress: Address, userData: UserDeposit): void {
     const validityStartSlot = new Slot(startPeriod, currentThread);
     const validityEndSlot = new Slot(endPeriod, currentThread); // Use the same thread as current for simplicity
 
-    const args = new Args().add(userAddress);
 
     // Schedule the ASC to call checkAndPerish function on THIS contract
     asyncCall(
@@ -140,33 +143,32 @@ function scheduleCheckinASC(userAddress: Address, userData: UserDeposit): void {
         validityEndSlot, // Latest slot for execution
         ASC_MAX_GAS, // Max gas for the checkAndPerish execution
         ASC_FEE, // Fee to be burned for this async message
-        args.serialize(), // Function parameters (userAddress)
-        0 // coins: No MAS transferred with the async message itself
-        // filterAddress and filterKey are optional, not needed here
     );
 
-    setUserDeposit(userAddress, userData);
-    generateEvent(`ASC Scheduled: ${userAddress.toString()} for slot ${startPeriod}. `);
+    generateEvent(`ASC Scheduled: for slot ${startPeriod}. `);
 }
 
-export function checkAndPerish(userAddress: Address): void {
+export function checkAndPerish(): void {
     // IMPORTANT: This function should only be callable by the scheduled ASC itself.
     assert(Context.caller() == Context.callee(), "This function can only be called by a scheduled ASC from this contract.");
 
-    let userData = getUserDeposit(userAddress);
+    const keys = Storage.getKeys();
+    for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
+        const userData = UserDeposit.fromByte(Storage.get(key));
+        const userAddress = key;
 
-    // Only process if the account is still active and has funds
+        // Only process if the account is still active and has funds
     if (!userData.is_active || userData.amount == 0) {
         // Pet already perished or no funds, nothing to do.
         generateEvent(`Check and Perish: No action for ${userAddress.toString()}.`);
-        return;
+        continue;
     }
 
     // Check if the grace period has truly passed
     if (Context.timestamp() > userData.last_checkin_timestamp + GRACE_PERIOD_SECONDS) {
         // Pet has perished!
         userData.is_active = false;
-        setUserDeposit(userAddress, userData);
 
         // Donate the funds
         transferCoins(DONATION_ADDRESS, userData.amount);
@@ -174,7 +176,7 @@ export function checkAndPerish(userAddress: Address): void {
 
         // Reset balance in contract's internal record (coins were transferred)
         userData.amount = 0;
-        setUserDeposit(userAddress, userData);
+        setUserDepositKey(userAddress, userData);
 
         // TODO: If you stored the ASC ID, you might explicitly cancel it here,
 
@@ -182,9 +184,15 @@ export function checkAndPerish(userAddress: Address): void {
         // Pet is still active, just resubmit the check. This might happen if
         // a check-in occurred just before this ASC executed, but after it was scheduled.
         // Reschedule the ASC for the new check-in time.
-        scheduleCheckinASC(userAddress, userData);
         generateEvent(`Check and Perish: ${userAddress.toString()} is still alive. Rescheduling check.`);
     }
+        generateEvent(
+            `User: ${key.toString()}, Amount: ${userData.amount}, Last Check-in: ${userData.last_checkin_timestamp}, Check-ins: ${userData.checkin_count}, Active: ${userData.is_active}`
+        );
+    }
+        scheduleCheckinASC();
+
+    
 }
 export function checkIn(): void {
     const caller = Context.caller();
@@ -198,9 +206,6 @@ export function checkIn(): void {
     userData.checkin_count += 1; // Increment check-in count
 
     setUserDeposit(caller, userData);
-
-    // Reschedule the ASC
-    scheduleCheckinASC(caller, userData);
 
     generateEvent(`CheckIn: ${caller.toString()} checked in. Count: ${userData.checkin_count}`);
 }
