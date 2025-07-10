@@ -121,10 +121,9 @@ function scheduleCheckinASC(userAddress: Address, userData: UserDeposit): void {
     // Calculate target slot for execution
     const currentSlot = Context.currentPeriod();
     const currentThread = Context.currentThread();
-    const targetSlotTimestamp = userData.last_checkin_timestamp + GRACE_PERIOD_SECONDS;
-
-
-    const startPeriod = currentSlot + targetSlotTimestamp + (GRACE_PERIOD_SECONDS / MASSA_SLOT_DURATION_SECONDS); // Calculate slots from seconds
+    const secondsUntilDeadline = userData.last_checkin_timestamp + GRACE_PERIOD_SECONDS - Context.timestamp();
+    const slotsUntilDeadline = secondsUntilDeadline / MASSA_SLOT_DURATION_SECONDS;
+    const startPeriod = currentSlot + slotsUntilDeadline;
     const endPeriod = startPeriod + 200; // Example: 100-second execution window
 
     const validityStartSlot = new Slot(startPeriod, currentThread);
