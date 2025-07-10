@@ -2,18 +2,16 @@
 
 import { Storage, Context, generateEvent, Address, transferCoins, asyncCall, deferredCallCancel, Slot } from "@massalabs/massa-as-sdk";
 import { Args } from "@massalabs/as-types"; // For serializing complex data
+import { DONATION_ADDRESS, PROTOCOL_PROFIT_ADDRESS } from "./config";
 
 // Constants
-const GRACE_PERIOD_SECONDS: u64 = 48 * 3600; // 48 hours
+const GRACE_PERIOD_SECONDS: u64 = 24 * 3600; // 24 hours
 const REQUIRED_CHECKINS: u64 = 100; // 100 days (or 100 check-ins)
 
-// REPLACE WITH A REAL TESTNET CHARITY ADDRESS or a test address you control
-const DONATION_ADDRESS: Address = new Address("AS12...");
 const MIN_DEPOSIT_AMOUNT: u64 = 5_000_000_000; // 5 MAS (5 * 10^9 smallest units)
                                              // Make sure this is sufficient to cover ASC_FEE and contribute to contract balance.
               
 
-const PROTOCOL_PROFIT_ADDRESS: Address = new Address("AS12_YOUR_PROFIT_ADDRESS_HERE"); // !!! REPLACE WITH YOUR ADDRESS !!!
 const PROTOCOL_FEE_PER_DEPOSIT: u64 = 100_000_000; // Example: 0.1 MAS (100 million smallest units)
                                                 // This is deducted from the MIN_DEPOSIT_AMOUNT
 
