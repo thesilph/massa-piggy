@@ -1,7 +1,8 @@
 import { bytesToStr, JsonRPCClient } from "@massalabs/massa-web3";
 import { useEffect, useState } from "react";
-import { MassaLogo } from "@massalabs/react-ui-kit";
 import './App.css';
+import PiggyBank from '../assets/piggy';
+import { walletExample } from './components/wallet';
 
 const sc_addr = import.meta.env.VITE_contract; 
 
@@ -28,6 +29,7 @@ function App() {
    */
   useEffect(() => {
     getGreeting();
+    walletExample().catch(console.error);
   });
 
   /**
@@ -44,7 +46,9 @@ function App() {
   return (
     <>
       <div>
-        <MassaLogo className="logo" size={100} />
+        <div>
+          <PiggyBank></PiggyBank>
+        </div>
         <h2>Greeting message:</h2>
         <h1>{greeting}</h1>
       </div>
